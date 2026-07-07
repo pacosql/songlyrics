@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Letras validadas — PDF de un folio</title>
+<style>
+  :root {
+    --print-font: 12pt;
+    --print-line: 1.45;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0; background: #f4f4f7; color: #1c1c22;
+  }
+  .app { max-width: 640px; margin: 0 auto; padding: 24px 16px 60px; }
+  h1 { font-size: 1.5rem; margin: 0 0 4px; }
+  .sub { color: #666; margin: 0 0 20px; font-size: .95rem; }
+  form {
+    background: #fff; border: 1px solid #ddd; border-radius: 10px;
+    padding: 16px; display: grid; gap: 12px;
+  }
+  label { font-size: .85rem; font-weight: 600; display: grid; gap: 4px; }
+  input[type=text] {
+    font-size: 1rem; padding: 10px 12px; border: 1px solid #ccc;
+    border-radius: 8px; width: 100%;
+  }
+  button {
+    font-size: 1rem; padding: 11px 16px; border: 0; border-radius: 8px;
+    cursor: pointer; font-weight: 600;
+  }
+  #searchBtn { background: #2f6fed; color: #fff; }
+  #searchBtn:disabled { background: #9db8ee; cursor: wait; }
+  #printBtn { background: #1d9e57; color: #fff; display: none; }
+  .log {
+    margin-top: 16px; background: #fff; border: 1px solid #ddd;
+    border-radius: 10px; padding: 12px 16px; font-size: .9rem;
+    display: none; white-space: pre-wrap;
+  }
+  .log .ok { color: #1d7a44; }
+  .log .warn { color: #b06a00; }
+  .log .err { color: #b3261e; }
+  .verdict {
+    margin-top: 16px; padding: 12px 16px; border-radius: 10px;
+    font-weight: 600; display: none;
+  }
+  .verdict.validated { background: #e3f6e9; color: #145c32; border: 1px solid #9fd8b4; }
+  .verdict.single { background: #fdf1dc; color: #7a4d00; border: 1px solid #ecc98a; }
+  .preview {
+    margin-top: 16px; background: #fff; border: 1px solid #ddd;
+    border-radius: 10px; padding: 20px; display: none; text-align: center;
+  }
+  .preview h2 { margin: 0 0 2px; }
+  .preview h3 { margin: 0 0 14px; color: #666; font-weight: 500; }
+  .preview .lyrics { white-space: pre-wrap; line-height: 1.5; }
+
+  /* ---------- Impresión: A4, una columna, máx. 2 caras ---------- */
+  #printArea { display: none; }
+  @media print {
+    @page { size: A4; margin: 14mm 18mm 16mm; }
+    body { background: #fff; }
+    .app { display: none; }
+    #printArea { display: block; font-family: Georgia, "Times New Roman", serif; }
+    #printArea .p-title {
+      text-align: center; font-size: 20pt; font-weight: 700; margin: 0 0 2mm;
+    }
+    #printArea .p-artist {
+      text-align: center; font-size: 13pt; color: #555; margin: 0 0 3mm;
+      padding-bottom: 3mm; border-bottom: .3mm solid #bbb;
+    }
+    #printArea .p-lyrics {
+      text-align: center; white-space: pre-wrap;
+      font-size: var(--print-font); line-height: var(--print-line);
+    }
+    #printArea .p-footer {
+      position: fixed; bottom: 0; left: 0; right: 0;
+      font-size: 7pt; color: #777; text-align: left;
+    }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>Letra de canción → PDF de un folio</h1>
+  <p class="sub">Busca la letra en varias fuentes, la valida por consenso y
+  la deja lista para imprimir en un solo folio (2 caras máx., una columna).
+  Para el PDF: pulsa «Imprimir» y elige «Guardar como PDF».</p>
+
+  <form id="form">
+    <label>Canción
+      <input type="text" id="song" placeholder="p. ej. Yesterday" required>
+    </label>
+    <label>Artista (opcional, ayuda a acertar)
+      <input type="text" id="artist" placeholder="p. ej. The Beatles">
+    </label>
+    <button id="searchBtn" type="submit">Buscar y validar letra</button>
+  </form>
+
+  <div class="log" id="log"></div>
+  <div class="verdict" id="verdict"></div>
+
+  <div class="preview" id="preview">
+    <h2 id="pvTitle"></h2>
+    <h3 id="pvArtist"></h3>
+    <div class="lyrics" id="pvLyrics"></div>
+    <p><button id="printBtn">🖨 Imprimir / Guardar como PDF (1 folio)</button></p>
+  </div>
+</div>
+
+<div id="printArea">
+  <div class="p-title" id="prTitle"></div>
+  <div class="p-artist" id="prArtist"></div>
+  <div class="p-lyrics" id="prLyrics"></div>
+  <div class="p-footer" id="prFooter"></div>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const THRESHOLD = 0.72;
+let current = null; // {title, artist, lyrics, verdict}
+
+function logLine(msg, cls) {
+  const log = $("log");
+  log.style.display = "block";
+  const div = document.createElement("div");
+  if (cls) div.className = cls;
+  div.textContent = msg;
+  log.appendChild(div);
+}
+
+/* ---------- Normalización y similitud (bigramas de caracteres) ---------- */
+function normalize(text) {
+  return text.toLowerCase()
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/\[.*?\]|\(.*?\)/g, " ")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ").trim();
+}
+function bigrams(s) {
+  const m = new Map();
+  for (let i = 0; i < s.length - 1; i++) {
+    const b = s.slice(i, i + 2);
+    m.set(b, (m.get(b) || 0) + 1);
+  }
+  return m;
+}
+function similarity(a, b) {
+  const A = bigrams(normalize(a)), B = bigrams(normalize(b));
+  let inter = 0, total = 0;
+  for (const [g, n] of A) { total += n; if (B.has(g)) inter += Math.min(n, B.get(g)); }
+  for (const n of B.values()) total += n;
+  return total ? (2 * inter) / total : 0;
+}
+
+/* ---------- Fuentes (APIs públicas con CORS) ---------- */
+async function fetchJSON(url) {
+  const r = await fetch(url, { headers: { "Accept": "application/json" } });
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+
+async function resolveSong(song, artist) {
+  // LRCLIB search para canonizar artista/título
+  const q = encodeURIComponent((artist ? artist + " " : "") + song);
+  try {
+    const hits = await fetchJSON("https://lrclib.net/api/search?q=" + q);
+    const h = hits.find(x => x.plainLyrics);
+    if (h) return { artist: h.artistName, title: h.trackName };
+  } catch (e) { /* seguimos con lo que dio el usuario */ }
+  return artist ? { artist, title: song } : null;
+}
+
+async function fromLrclib(artist, title) {
+  const u = "https://lrclib.net/api/get?artist_name=" +
+    encodeURIComponent(artist) + "&track_name=" + encodeURIComponent(title);
+  try {
+    const d = await fetchJSON(u);
+    const lyrics = (d.plainLyrics || "").trim();
+    if (lyrics) return { source: "LRCLIB", lyrics };
+  } catch (e) { /* sin resultado */ }
+  // plan B: búsqueda
+  try {
+    const hits = await fetchJSON("https://lrclib.net/api/search?q=" +
+      encodeURIComponent(artist + " " + title));
+    const h = hits.find(x => x.plainLyrics);
+    if (h) return { source: "LRCLIB", lyrics: h.plainLyrics.trim() };
+  } catch (e) { /* sin resultado */ }
+  return null;
+}
+
+async function fromLyricsOvh(artist, title) {
+  try {
+    const d = await fetchJSON("https://api.lyrics.ovh/v1/" +
+      encodeURIComponent(artist) + "/" + encodeURIComponent(title));
+    const lyrics = (d.lyrics || "").trim();
+    if (lyrics) return { source: "lyrics.ovh", lyrics };
+  } catch (e) { /* sin resultado */ }
+  return null;
+}
+
+/* ---------- Validación por consenso ---------- */
+function validate(results) {
+  const v = { validated: false, chosen: null, agreeing: [], pairs: [] };
+  if (!results.length) return v;
+  if (results.length === 1) {
+    v.chosen = results[0]; v.agreeing = [results[0].source]; return v;
+  }
+  for (let i = 0; i < results.length; i++)
+    for (let j = i + 1; j < results.length; j++)
+      v.pairs.push([results[i].source, results[j].source,
+                    similarity(results[i].lyrics, results[j].lyrics)]);
+  // grupo mayor de fuentes que coinciden
+  let best = [0];
+  for (let i = 0; i < results.length; i++) {
+    const g = [i];
+    for (let j = 0; j < results.length; j++) {
+      if (i !== j && similarity(results[i].lyrics, results[j].lyrics) >= THRESHOLD) g.push(j);
+    }
+    if (g.length > best.length) best = g;
+  }
+  if (best.length >= 2) {
+    v.validated = true;
+    const group = best.map(i => results[i]);
+    v.chosen = group.reduce((a, b) => (b.lyrics.length > a.lyrics.length ? b : a));
+    v.agreeing = group.map(r => r.source);
+  } else {
+    v.chosen = results[0];
+    v.agreeing = [results[0].source];
+  }
+  return v;
+}
+
+/* ---------- Ajuste a un folio (máx. 2 caras A4) ---------- */
+function fitFontSize(title, artist, lyrics) {
+  // Mide el contenido a distintos tamaños en un contenedor A4 oculto.
+  const meas = document.createElement("div");
+  meas.style.cssText = "position:absolute;left:-9999px;top:0;width:174mm;" +
+    "font-family:Georgia,'Times New Roman',serif;white-space:pre-wrap;text-align:center;";
+  document.body.appendChild(meas);
+  const mm = (() => {
+    const d = document.createElement("div");
+    d.style.cssText = "position:absolute;left:-9999px;height:100mm;width:1px;";
+    document.body.appendChild(d);
+    const px = d.offsetHeight / 100;
+    d.remove();
+    return v => v * px;
+  })();
+  const headerMm = 24;            // título + artista + separador
+  const usable = 2 * (297 - 14 - 16 - 8) - headerMm; // 2 caras menos márgenes y pie
+  const budget = mm(usable);
+  const sizes = [12, 11, 10, 9, 8, 7];
+  let chosen = sizes[sizes.length - 1], fits = false;
+  for (const s of sizes) {
+    meas.style.fontSize = s + "pt";
+    meas.style.lineHeight = "1.45";
+    meas.textContent = lyrics;
+    if (meas.offsetHeight <= budget) { chosen = s; fits = true; break; }
+  }
+  meas.remove();
+  return { size: chosen, fits };
+}
+
+/* ---------- Flujo principal ---------- */
+$("form").addEventListener("submit", async ev => {
+  ev.preventDefault();
+  const btn = $("searchBtn");
+  btn.disabled = true;
+  $("log").innerHTML = ""; $("log").style.display = "none";
+  $("verdict").style.display = "none"; $("preview").style.display = "none";
+
+  try {
+    const song = $("song").value.trim();
+    const artistIn = $("artist").value.trim();
+    logLine("Identificando canción…");
+    const id = await resolveSong(song, artistIn || null);
+    if (!id) {
+      logLine("No pude identificar el artista. Escríbelo en el campo «Artista».", "err");
+      return;
+    }
+    logLine("♪ " + id.title + " — " + id.artist);
+
+    logLine("Consultando fuentes (LRCLIB, lyrics.ovh)…");
+    const settled = await Promise.all([
+      fromLrclib(id.artist, id.title),
+      fromLyricsOvh(id.artist, id.title),
+    ]);
+    const results = settled.filter(Boolean);
+    if (!results.length) {
+      logLine("Ninguna fuente devolvió la letra. Revisa título/artista.", "err");
+      return;
+    }
+    results.forEach(r => logLine("  ✓ " + r.source + ": " + r.lyrics.length + " caracteres", "ok"));
+
+    const v = validate(results);
+    v.pairs.forEach(([a, b, s]) =>
+      logLine("  · similitud " + a + " ↔ " + b + ": " + Math.round(s * 100) + " %"));
+
+    const box = $("verdict");
+    box.style.display = "block";
+    if (v.validated) {
+      box.className = "verdict validated";
+      box.textContent = "✔ Letra validada: coinciden " + v.agreeing.join(" y ");
+    } else {
+      box.className = "verdict single";
+      box.textContent = "⚠ Solo una fuente disponible o sin consenso (" +
+        v.chosen.source + "). Revísala antes de imprimir.";
+    }
+
+    current = { title: id.title, artist: id.artist, lyrics: v.chosen.lyrics, verdict: v };
+    $("pvTitle").textContent = id.title;
+    $("pvArtist").textContent = id.artist;
+    $("pvLyrics").textContent = v.chosen.lyrics;
+    $("preview").style.display = "block";
+    $("printBtn").style.display = "inline-block";
+  } catch (e) {
+    logLine("Error inesperado: " + e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("printBtn").addEventListener("click", () => {
+  if (!current) return;
+  const fit = fitFontSize(current.title, current.artist, current.lyrics);
+  document.documentElement.style.setProperty("--print-font", fit.size + "pt");
+  $("prTitle").textContent = current.title;
+  $("prArtist").textContent = current.artist;
+  $("prLyrics").textContent = current.lyrics;
+  const v = current.verdict;
+  const today = new Date().toLocaleDateString("es-ES");
+  $("prFooter").textContent = (v.validated
+    ? "Letra validada: " + v.agreeing.length + " fuentes coinciden (" + v.agreeing.join(", ") + ")"
+    : "Letra de una sola fuente (sin validación cruzada) (" + v.agreeing.join(", ") + ")")
+    + " — " + today;
+  if (!fit.fits) {
+    alert("La letra es muy larga: puede que no quepa en un folio ni con la letra mínima.");
+  }
+  window.print();
+});
+</script>
+</body>
+</html>
