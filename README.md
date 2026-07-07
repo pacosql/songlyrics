@@ -33,11 +33,11 @@ python -m lyrics_app "Clavado en un bar" -a "Maná" -o clavado.pdf
 
 ## El PDF
 
-- Formato A4, título y artista en cabecera, letra centrada.
+- Formato A4, **una sola columna**, título y artista en cabecera, letra
+  centrada.
 - **Máximo un folio (2 páginas, cara y dorso)**: el tamaño de letra baja
-  automáticamente de 12 pt hasta 10 pt a una columna y, si la canción es
-  larga, pasa a **dos columnas** (10 pt → 7 pt) antes que superar el folio.
-  Si ni así cabe, se genera igualmente y la app avisa.
+  automáticamente de 12 pt hasta 7 pt hasta que quepa. Si ni así cabe,
+  se genera igualmente y la app avisa.
 - El pie de página indica qué fuentes validaron la letra y la fecha.
 
 ## Notas

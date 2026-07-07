@@ -18,17 +18,14 @@ _NEXT_LINE = {"new_x": XPos.LMARGIN, "new_y": YPos.NEXT}
 
 MAX_PAGES = 2  # un folio, dos caras
 
-# (tamaño de letra, alto de línea, tamaño título, tamaño artista, columnas)
-# Primero se intenta a una columna; si no cabe, dos columnas antes de
-# reducir la letra a tamaños poco legibles.
+# (tamaño de letra, alto de línea, tamaño título, tamaño artista)
 _SIZE_STEPS = (
-    (12, 6.5, 22, 14, 1),
-    (11, 6.0, 20, 13, 1),
-    (10, 5.5, 18, 12, 1),
-    (10, 5.5, 18, 12, 2),
-    (9, 5.0, 16, 11, 2),
-    (8, 4.5, 15, 10, 2),
-    (7, 4.0, 14, 10, 2),
+    (12, 6.5, 22, 14),
+    (11, 6.0, 20, 13),
+    (10, 5.5, 18, 12),
+    (9, 5.0, 16, 11),
+    (8, 4.5, 15, 10),
+    (7, 4.0, 14, 10),
 )
 
 # Fuente Unicode del sistema si existe (acentos, ñ, comillas tipográficas…)
@@ -73,13 +70,10 @@ def _render(
     line_h: float,
     title_size: float,
     artist_size: float,
-    ncols: int,
 ) -> _LyricsPDF:
     pdf = _LyricsPDF(format="A4")
     pdf.set_margins(18, 14, 18)
-    # Los saltos de página/columna se gestionan a mano para poder fluir
-    # el texto en columnas.
-    pdf.set_auto_page_break(False)
+    pdf.set_auto_page_break(True, margin=16)
     regular, bold = fonts
     if family != "Helvetica" and regular and bold:
         pdf.add_font(family, "", regular)
@@ -99,43 +93,16 @@ def _render(
     pdf.line(pdf.l_margin, pdf.get_y(), pdf.w - pdf.r_margin, pdf.get_y())
     pdf.ln(3)
 
-    # Letra, fluyendo por columnas y páginas
+    # Letra
     pdf.set_font(family, "", body_size)
     pdf.set_text_color(0, 0, 0)
-    gutter = 8.0
-    epw = pdf.w - pdf.l_margin - pdf.r_margin
-    col_w = (epw - gutter * (ncols - 1)) / ncols
-    bottom = pdf.h - 18  # deja sitio al pie de página
     blank = line_h * 0.55
-
-    state = {"col": 0, "top": pdf.get_y(), "at_top": True}
-
-    def col_x() -> float:
-        return pdf.l_margin + state["col"] * (col_w + gutter)
-
-    def advance_col():
-        state["col"] += 1
-        if state["col"] >= ncols:
-            pdf.add_page()
-            state["col"] = 0
-            state["top"] = pdf.t_margin
-        pdf.set_y(state["top"])
-        state["at_top"] = True
-
     for line in lyrics.splitlines():
         line = line.rstrip()
         if not line:
-            # separación entre estrofas, nunca al principio de una columna
-            if not state["at_top"] and pdf.get_y() + blank <= bottom:
-                pdf.ln(blank)
+            pdf.ln(blank)
             continue
-        h = pdf.multi_cell(col_w, line_h, line, align="C",
-                           dry_run=True, output="HEIGHT")
-        if pdf.get_y() + h > bottom:
-            advance_col()
-        pdf.set_x(col_x())
-        pdf.multi_cell(col_w, line_h, line, align="C", **_NEXT_LINE)
-        state["at_top"] = False
+        pdf.multi_cell(0, line_h, line, align="C", **_NEXT_LINE)
     return pdf
 
 

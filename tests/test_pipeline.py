@@ -81,15 +81,15 @@ class PdfTests(unittest.TestCase):
         self.assertTrue(info["fits"])
 
     def test_long_song_fits_one_sheet_by_shrinking(self):
-        info = self._build(120)
+        info = self._build(80)
         self.assertLessEqual(info["pages"], MAX_PAGES)
         self.assertTrue(info["fits"])
         self.assertLess(info["font_size"], 12)
 
     def test_extreme_song_reported_as_not_fitting(self):
         info = self._build(600)
-        if info["pages"] > MAX_PAGES:
-            self.assertFalse(info["fits"])
+        self.assertGreater(info["pages"], MAX_PAGES)
+        self.assertFalse(info["fits"])
 
 
 if __name__ == "__main__":
