@@ -84,8 +84,8 @@
 <div class="app">
   <h1>Letra de canción → PDF de un folio</h1>
   <p class="sub">Busca la letra en varias fuentes, la valida por consenso y
-  la deja lista para imprimir en un solo folio (2 caras máx., una columna).
-  Para el PDF: pulsa «Imprimir» y elige «Guardar como PDF».</p>
+  descarga un PDF listo para imprimir en un solo folio (2 caras máx.,
+  una columna), sin encabezados ni URL del navegador.</p>
 
   <form id="form">
     <label>Canción
@@ -104,7 +104,7 @@
     <h2 id="pvTitle"></h2>
     <h3 id="pvArtist"></h3>
     <div class="lyrics" id="pvLyrics"></div>
-    <p><button id="printBtn">🖨 Imprimir / Guardar como PDF (1 folio)</button></p>
+    <p><button id="printBtn">⬇ Descargar PDF (1 folio)</button></p>
   </div>
 </div>
 
@@ -115,6 +115,7 @@
   <div class="p-footer" id="prFooter"></div>
 </div>
 
+<script src="./jspdf.umd.min.js"></script>
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
@@ -321,23 +322,128 @@ $("form").addEventListener("submit", async ev => {
   }
 });
 
-$("printBtn").addEventListener("click", () => {
-  if (!current) return;
-  const fit = fitFontSize(current.title, current.artist, current.lyrics);
-  document.documentElement.style.setProperty("--print-font", fit.size + "pt");
-  $("prTitle").textContent = current.title;
-  $("prArtist").textContent = current.artist;
-  $("prLyrics").textContent = current.lyrics;
-  const v = current.verdict;
+/* ---------- Generación directa del PDF (jsPDF, sin diálogo de imprimir) ---------- */
+const PAGE = { w: 210, h: 297, l: 18, r: 18, t: 14, b: 16 };
+// [cuerpo pt, alto de línea mm, título pt, artista pt]
+const STEPS = [
+  [12, 6.5, 20, 13], [11, 6.0, 19, 12], [10, 5.5, 18, 12],
+  [9, 5.0, 16, 11], [8, 4.5, 15, 10], [7, 4.0, 14, 10],
+];
+
+function footerText(v) {
   const today = new Date().toLocaleDateString("es-ES");
-  $("prFooter").textContent = (v.validated
+  return (v.validated
     ? "Letra validada: " + v.agreeing.length + " fuentes coinciden (" + v.agreeing.join(", ") + ")"
     : "Letra de una sola fuente (sin validación cruzada) (" + v.agreeing.join(", ") + ")")
     + " — " + today;
-  if (!fit.fits) {
-    alert("La letra es muy larga: puede que no quepa en un folio ni con la letra mínima.");
+}
+
+function layoutBody(doc, rawLines, step, headerH) {
+  const [body, lineH] = step;
+  const maxW = PAGE.w - PAGE.l - PAGE.r;
+  const bottom = PAGE.h - PAGE.b - 6; // hueco para el pie
+  const blank = lineH * 0.55;
+  doc.setFontSize(body);
+  const items = [];
+  let page = 1, y = PAGE.t + headerH;
+  for (const raw of rawLines) {
+    if (!raw.trim()) { y += blank; continue; }
+    for (const text of doc.splitTextToSize(raw, maxW)) {
+      y += lineH;
+      if (y > bottom) { page++; y = PAGE.t + lineH; }
+      items.push({ text, page, y });
+    }
   }
-  window.print();
+  return { items, pages: page };
+}
+
+function generatePdf(data) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const maxW = PAGE.w - PAGE.l - PAGE.r;
+  const cx = PAGE.w / 2;
+  const rawLines = data.lyrics.split(/\r?\n/);
+
+  // Cabecera: medir su altura con el paso más grande (varía poco)
+  let chosen = STEPS[STEPS.length - 1], layout = null, fits = false;
+  for (const step of STEPS) {
+    const [, , titleS, artistS] = step;
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(titleS);
+    const titleLines = doc.splitTextToSize(data.title, maxW);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(artistS);
+    const artistLines = doc.splitTextToSize(data.artist, maxW);
+    const headerH = titleLines.length * titleS * 0.45 +
+      artistLines.length * artistS * 0.5 + 7;
+    const l = layoutBody(doc, rawLines, step, headerH);
+    l.titleLines = titleLines; l.artistLines = artistLines; l.headerH = headerH;
+    layout = l; chosen = step;
+    if (l.pages <= 2) { fits = true; break; }
+  }
+
+  const [body, , titleS, artistS] = chosen;
+
+  // Cabecera (solo primera cara)
+  let y = PAGE.t;
+  doc.setTextColor(20);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(titleS);
+  for (const t of layout.titleLines) { y += titleS * 0.45; doc.text(t, cx, y, { align: "center" }); }
+  doc.setTextColor(110);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(artistS);
+  for (const t of layout.artistLines) { y += artistS * 0.5; doc.text(t, cx, y, { align: "center" }); }
+  doc.setDrawColor(180);
+  doc.line(PAGE.l, y + 2.5, PAGE.w - PAGE.r, y + 2.5);
+
+  // Letra
+  doc.setTextColor(0);
+  doc.setFontSize(body);
+  let currentPage = 1;
+  for (const it of layout.items) {
+    while (currentPage < it.page) { doc.addPage(); currentPage++; }
+    doc.setPage(it.page);
+    doc.text(it.text, cx, it.y, { align: "center" });
+  }
+
+  // Pie en todas las páginas
+  const foot = footerText(data.verdict);
+  const total = doc.getNumberOfPages();
+  doc.setFontSize(7);
+  doc.setTextColor(130);
+  for (let p = 1; p <= total; p++) {
+    doc.setPage(p);
+    doc.text(foot, PAGE.l, PAGE.h - 8);
+    doc.text("Página " + p + "/" + total, PAGE.w - PAGE.r, PAGE.h - 8, { align: "right" });
+  }
+  return { doc, pages: total, fits };
+}
+
+function slug(text) {
+  return text.normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^\w\s-]/g, "").trim().replace(/[\s_-]+/g, "-") || "cancion";
+}
+
+$("printBtn").addEventListener("click", () => {
+  if (!current) return;
+  if (!window.jspdf || !window.jspdf.jsPDF) {
+    // Plan B si la librería no cargó: diálogo de imprimir del navegador
+    const fit = fitFontSize(current.title, current.artist, current.lyrics);
+    document.documentElement.style.setProperty("--print-font", fit.size + "pt");
+    $("prTitle").textContent = current.title;
+    $("prArtist").textContent = current.artist;
+    $("prLyrics").textContent = current.lyrics;
+    $("prFooter").textContent = footerText(current.verdict);
+    window.print();
+    return;
+  }
+  const { doc, pages, fits } = generatePdf(current);
+  if (!fits) {
+    alert("La letra es muy larga: el PDF ocupa " + pages +
+      " páginas, más de un folio incluso con la letra mínima.");
+  }
+  doc.save(slug(current.artist) + "-" + slug(current.title) + ".pdf");
 });
 </script>
 </body>
