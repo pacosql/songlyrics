@@ -97,6 +97,16 @@
     <button id="searchBtn" type="submit">Buscar y validar letra</button>
   </form>
 
+  <details style="margin-top:16px;background:#fff;border:1px solid #ddd;border-radius:10px;padding:12px 16px">
+    <summary style="cursor:pointer;font-weight:600">🧠 Glosario con IA (opcional): definiciones para 12 años y del sentido de la canción</summary>
+    <p style="font-size:.85rem;color:#666">Pega tu clave de la API de Anthropic (empieza por <code>sk-ant-</code>).
+    Se guarda solo en este navegador y se usa únicamente para redactar el glosario:
+    definiciones sencillas adaptadas a un niño de 12 años, según el sentido que cada
+    palabra tiene en la canción, con dos sinónimos y dos antónimos en español.
+    Sin clave, se usan diccionarios gratuitos (acepción principal).</p>
+    <input type="password" id="apiKey" placeholder="sk-ant-..." style="font-size:1rem;padding:10px 12px;border:1px solid #ccc;border-radius:8px;width:100%">
+  </details>
+
   <div class="log" id="log"></div>
   <div class="verdict" id="verdict"></div>
 
@@ -126,6 +136,13 @@
 const $ = id => document.getElementById(id);
 const THRESHOLD = 0.72;
 let current = null; // {title, artist, lyrics, verdict}
+
+// La clave de API (opcional) se guarda solo en este navegador
+try {
+  $("apiKey").value = localStorage.getItem("anthropicApiKey") || "";
+  $("apiKey").addEventListener("input", () =>
+    localStorage.setItem("anthropicApiKey", $("apiKey").value.trim()));
+} catch (e) { /* almacenamiento no disponible */ }
 
 function logLine(msg, cls) {
   const log = $("log");
@@ -330,6 +347,14 @@ async function fetchEsInfo(word) {
         encodeURIComponent(word), 9000);
       for (const x of s) if (info.syn.length < 2 && !info.syn.includes(x.word)) info.syn.push(x.word);
     }
+    if (info.syn.length < 2) {
+      // relleno con «significa parecido» para llegar a dos sinónimos
+      const s = await fetchJSON("https://api.datamuse.com/words?v=es&max=4&ml=" +
+        encodeURIComponent(word), 9000);
+      for (const x of s) {
+        if (info.syn.length < 2 && x.word !== word && !info.syn.includes(x.word)) info.syn.push(x.word);
+      }
+    }
     if (info.ant.length < 2) {
       const a = await fetchJSON("https://api.datamuse.com/words?v=es&max=2&rel_ant=" +
         encodeURIComponent(word), 9000);
@@ -360,16 +385,103 @@ async function lookupWord(word, spanish) {
   return { word, trans, def: info.def, syn: info.syn, ant: info.ant };
 }
 
-async function buildGlossary(lyrics) {
+// Glosario redactado con la API de Claude (opcional, con la clave del usuario):
+// definición breve para 12 años según el sentido de la canción, y dos
+// sinónimos y dos antónimos en español.
+const AI_MODEL = "claude-opus-4-8";
+const AI_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["entries"],
+  properties: {
+    entries: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["word", "trans", "def", "syn", "ant"],
+        properties: {
+          word: { type: "string" },
+          trans: { type: "string" },
+          def: { type: "string" },
+          syn: { type: "array", items: { type: "string" } },
+          ant: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+  },
+};
+
+async function aiGlossary(title, artist, lyrics, words, apiKey) {
+  const prompt =
+    "Eres un diccionario escolar para estudiantes de 12 años. Debajo tienes la letra de " +
+    "la canción «" + title + "» de " + artist + " y una lista de palabras que aparecen en ella.\n\n" +
+    "Para CADA palabra de la lista, en el mismo orden, devuelve:\n" +
+    "- word: la palabra tal cual aparece en la lista.\n" +
+    "- trans: su traducción al español según cómo se usa en esta canción " +
+    "(cadena vacía si la palabra ya está en español).\n" +
+    "- def: una definición breve en español (máximo 15 palabras), estilo diccionario " +
+    "pero con lenguaje sencillo que entienda un niño de 12 años, del significado que " +
+    "la palabra tiene EN ESTA CANCIÓN.\n" +
+    "- syn: exactamente dos sinónimos EN ESPAÑOL de ese significado.\n" +
+    "- ant: exactamente dos antónimos EN ESPAÑOL (si no existen antónimos razonables, " +
+    "usa los más opuestos posibles).\n\n" +
+    "LETRA:\n" + lyrics + "\n\nPALABRAS:\n" + words.join(", ");
+
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      model: AI_MODEL,
+      max_tokens: 8000,
+      output_config: { format: { type: "json_schema", schema: AI_SCHEMA } },
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+  if (r.status === 401) throw new Error("clave de API no válida");
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  const d = await r.json();
+  if (d.stop_reason === "refusal") throw new Error("la API declinó la petición");
+  const text = (d.content.find(b => b.type === "text") || {}).text || "";
+  const entries = JSON.parse(text).entries || [];
+  return entries
+    .filter(e => e.def)
+    .map(e => ({
+      word: e.word,
+      trans: (e.trans || "").toLowerCase(),
+      def: e.def,
+      syn: (e.syn || []).slice(0, 2),
+      ant: (e.ant || []).slice(0, 2),
+    }));
+}
+
+async function buildGlossary(lyrics, title, artist) {
   const spanish = isSpanishText(lyrics);
   const cands = glossaryCandidates(lyrics, spanish, 40);
-  if (!cands.length) return [];
+  if (!cands.length) return { entries: [], via: "none" };
+
+  const apiKey = ($("apiKey").value || "").trim();
+  if (apiKey) {
+    try {
+      const entries = await aiGlossary(title, artist, lyrics, cands, apiKey);
+      if (entries.length) return { entries, via: "ia" };
+    } catch (e) {
+      logLine("  ⚠ Glosario con IA no disponible (" + e.message +
+        "); uso los diccionarios gratuitos.", "warn");
+    }
+  }
+
   const out = [];
   for (let i = 0; i < cands.length; i += 6) {   // por tandas, sin saturar las APIs
     const part = await Promise.all(cands.slice(i, i + 6).map(w => lookupWord(w, spanish)));
     out.push(...part.filter(Boolean));
   }
-  return out;
+  return { entries: out, via: "diccionarios" };
 }
 
 /* ---------- Ajuste a un folio (máx. 2 caras A4) ---------- */
@@ -458,10 +570,11 @@ $("form").addEventListener("submit", async ev => {
     // Glosario en segundo plano (traducción/definición + sinónimos y antónimos)
     $("glossPreview").innerHTML = "";
     logLine("Preparando glosario…");
-    current.glossaryPromise = buildGlossary(v.chosen.lyrics).then(g => {
-      if (g.length) {
-        logLine("  ✓ Glosario: " + g.length + " palabras", "ok");
-        for (const e of g) {
+    current.glossaryPromise = buildGlossary(v.chosen.lyrics, id.title, id.artist).then(g => {
+      if (g.entries.length) {
+        logLine("  ✓ Glosario: " + g.entries.length + " palabras" +
+          (g.via === "ia" ? " (redactado con IA, sentido de la canción)" : " (diccionarios gratuitos)"), "ok");
+        for (const e of g.entries) {
           const d = document.createElement("div");
           d.textContent = "• " + (e.trans ? e.word + " — " + e.trans : e.word) +
             (e.def ? ": " + e.def : "") +
@@ -472,7 +585,7 @@ $("form").addEventListener("submit", async ev => {
       } else {
         logLine("  · No encontré palabras para el glosario en los diccionarios.", "warn");
       }
-      return g;
+      return g.entries;
     }).catch(() => []);
   } catch (e) {
     logLine("Error inesperado: " + e.message, "err");

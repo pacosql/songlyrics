@@ -19,11 +19,19 @@ el workflow de GitHub Actions.
 
 Opcionalmente añade un **glosario que empieza en la cara siguiente a la
 letra** (dos puntos menos de tamaño): todas las palabras no triviales de la
-canción, en el orden en que aparecen, cada una con su traducción al español
-(canciones en otro idioma, vía MyMemory), una definición breve tipo
-diccionario (dictionaryapi.dev/Datamuse, acepción principal) y dos
-sinónimos y dos antónimos en español (Datamuse). Todas las fuentes son
-gratuitas y sin clave.
+canción, en el orden en que aparecen, cada una con su traducción al español,
+una definición breve tipo diccionario y dos sinónimos y dos antónimos en
+español.
+
+El glosario tiene dos modos:
+
+- **Con IA (opcional)**: pegando una clave de la API de Anthropic en la
+  página (se guarda solo en el navegador, en `localStorage`), las
+  definiciones se redactan con Claude: lenguaje sencillo para 12 años y
+  según el sentido que cada palabra tiene en la canción, con dos sinónimos
+  y dos antónimos en español garantizados.
+- **Sin clave**: diccionarios gratuitos (MyMemory, dictionaryapi.dev,
+  Datamuse) con la acepción principal de cada palabra.
 
 Nota: ChartLyrics no permite consultas desde el navegador, así que la web
 valida con dos fuentes (LRCLIB y lyrics.ovh); la versión de terminal usa
