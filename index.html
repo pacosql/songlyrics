@@ -283,80 +283,93 @@ function isSpanishText(lyrics) {
   return es >= en;
 }
 
+// Todas las palabras no triviales, en el orden en que aparecen en la letra
 function glossaryCandidates(lyrics, spanish, max) {
-  const re = spanish ? /[a-záéíóúüñ]{5,}/g : /[a-z]{5,}/g;
+  const re = spanish ? /[a-záéíóúüñ]{4,}/g : /[a-z]{4,}/g;
   const stop = spanish ? ES_STOP : EN_STOP;
-  const words = [...new Set(lyrics.toLowerCase().match(re) || [])].filter(w => !stop.has(w));
-  words.sort((a, b) => b.length - a.length);
-  return words.slice(0, max);
+  const seen = new Set(), out = [];
+  for (const w of lyrics.toLowerCase().match(re) || []) {
+    if (seen.has(w) || stop.has(w)) continue;
+    seen.add(w);
+    out.push(w);
+    if (out.length >= max) break;
+  }
+  return out;
 }
 
-// Canción en otro idioma: traducción al español (MyMemory) + sin./ant. (Datamuse)
-async function lookupEn(word) {
-  const e = { word, trans: "", syn: [], ant: [] };
-  try {
-    const d = await fetchJSON("https://api.mymemory.translated.net/get?q=" +
-      encodeURIComponent(word) + "&langpair=en|es", 9000);
-    const t = d.responseData && d.responseData.translatedText;
-    if (t && t.toLowerCase().trim() !== word) e.trans = t.toLowerCase().trim();
-  } catch (err) { /* sin traducción */ }
-  if (!e.trans) return null;
-  try {
-    const s = await fetchJSON("https://api.datamuse.com/words?max=2&rel_syn=" +
-      encodeURIComponent(word), 9000);
-    e.syn = s.map(x => x.word).slice(0, 2);
-  } catch (err) { /* sin sinónimos */ }
-  try {
-    const a = await fetchJSON("https://api.datamuse.com/words?max=2&rel_ant=" +
-      encodeURIComponent(word), 9000);
-    e.ant = a.map(x => x.word).slice(0, 2);
-  } catch (err) { /* sin antónimos */ }
-  return e;
+function shortDef(s) {
+  s = (s || "").split(/[.;]/)[0].trim();
+  return s.length > 110 ? s.slice(0, 110) + "…" : s;
 }
 
-// Canción en español: breve definición (dictionaryapi.dev / Datamuse) + sin./ant.
-async function lookupEs(word) {
-  const e = { word, trans: "", syn: [], ant: [] };
+// Definición breve + sinónimos y antónimos EN ESPAÑOL de una palabra española
+async function fetchEsInfo(word) {
+  const info = { def: "", syn: [], ant: [] };
   try {
     const d = await fetchJSON("https://api.dictionaryapi.dev/api/v2/entries/es/" +
       encodeURIComponent(word), 9000);
     for (const m of (d[0] && d[0].meanings) || []) {
       for (const df of m.definitions || []) {
-        if (!e.trans && df.definition) e.trans = df.definition;
-        for (const s of df.synonyms || []) if (e.syn.length < 2 && !e.syn.includes(s)) e.syn.push(s);
-        for (const a of df.antonyms || []) if (e.ant.length < 2 && !e.ant.includes(a)) e.ant.push(a);
+        if (!info.def && df.definition) info.def = shortDef(df.definition);
+        for (const s of df.synonyms || []) if (info.syn.length < 2 && !info.syn.includes(s)) info.syn.push(s);
+        for (const a of df.antonyms || []) if (info.ant.length < 2 && !info.ant.includes(a)) info.ant.push(a);
       }
-      for (const s of m.synonyms || []) if (e.syn.length < 2 && !e.syn.includes(s)) e.syn.push(s);
-      for (const a of m.antonyms || []) if (e.ant.length < 2 && !e.ant.includes(a)) e.ant.push(a);
+      for (const s of m.synonyms || []) if (info.syn.length < 2 && !info.syn.includes(s)) info.syn.push(s);
+      for (const a of m.antonyms || []) if (info.ant.length < 2 && !info.ant.includes(a)) info.ant.push(a);
     }
   } catch (err) { /* probamos Datamuse */ }
   try {
-    if (!e.trans) {
+    if (!info.def) {
       const d = await fetchJSON("https://api.datamuse.com/words?v=es&max=1&md=d&sp=" +
         encodeURIComponent(word), 9000);
       const defs = d[0] && d[0].defs;
-      if (defs && defs[0]) e.trans = defs[0].replace(/^[^\t]*\t/, "");
+      if (defs && defs[0]) info.def = shortDef(defs[0].replace(/^[^\t]*\t/, ""));
     }
-    if (e.trans && e.syn.length < 2) {
+    if (info.syn.length < 2) {
       const s = await fetchJSON("https://api.datamuse.com/words?v=es&max=2&rel_syn=" +
         encodeURIComponent(word), 9000);
-      for (const x of s) if (e.syn.length < 2 && !e.syn.includes(x.word)) e.syn.push(x.word);
+      for (const x of s) if (info.syn.length < 2 && !info.syn.includes(x.word)) info.syn.push(x.word);
     }
-    if (e.trans && e.ant.length < 2) {
+    if (info.ant.length < 2) {
       const a = await fetchJSON("https://api.datamuse.com/words?v=es&max=2&rel_ant=" +
         encodeURIComponent(word), 9000);
-      for (const x of a) if (e.ant.length < 2 && !e.ant.includes(x.word)) e.ant.push(x.word);
+      for (const x of a) if (info.ant.length < 2 && !info.ant.includes(x.word)) info.ant.push(x.word);
     }
   } catch (err) { /* dejamos lo que haya */ }
-  return e.trans ? e : null;
+  return info;
+}
+
+// Cada entrada: traducción al español (si la canción está en otro idioma),
+// definición breve tipo diccionario y sin./ant. en español (de la acepción principal)
+async function lookupWord(word, spanish) {
+  let trans = "", base = word;
+  if (!spanish) {
+    try {
+      const d = await fetchJSON("https://api.mymemory.translated.net/get?q=" +
+        encodeURIComponent(word) + "&langpair=en|es", 9000);
+      const t = d.responseData && d.responseData.translatedText;
+      if (t && t.toLowerCase().trim() !== word) trans = t.toLowerCase().trim();
+    } catch (err) { /* sin traducción */ }
+    if (!trans) return null;
+    // para definición y sin./ant. usamos la primera palabra de la traducción
+    base = (trans.split(/[,;(]/)[0].trim().split(/\s+/)[0] || "").replace(/[^a-záéíóúüñ]/gi, "");
+    if (!base) return { word, trans, def: "", syn: [], ant: [] };
+  }
+  const info = await fetchEsInfo(base);
+  if (spanish && !info.def) return null;
+  return { word, trans, def: info.def, syn: info.syn, ant: info.ant };
 }
 
 async function buildGlossary(lyrics) {
   const spanish = isSpanishText(lyrics);
-  const cands = glossaryCandidates(lyrics, spanish, 12);
+  const cands = glossaryCandidates(lyrics, spanish, 40);
   if (!cands.length) return [];
-  const looked = await Promise.all(cands.map(w => (spanish ? lookupEs(w) : lookupEn(w))));
-  return looked.filter(Boolean).slice(0, 8);
+  const out = [];
+  for (let i = 0; i < cands.length; i += 6) {   // por tandas, sin saturar las APIs
+    const part = await Promise.all(cands.slice(i, i + 6).map(w => lookupWord(w, spanish)));
+    out.push(...part.filter(Boolean));
+  }
+  return out;
 }
 
 /* ---------- Ajuste a un folio (máx. 2 caras A4) ---------- */
@@ -450,7 +463,8 @@ $("form").addEventListener("submit", async ev => {
         logLine("  ✓ Glosario: " + g.length + " palabras", "ok");
         for (const e of g) {
           const d = document.createElement("div");
-          d.textContent = "• " + e.word + " — " + e.trans +
+          d.textContent = "• " + (e.trans ? e.word + " — " + e.trans : e.word) +
+            (e.def ? ": " + e.def : "") +
             (e.syn.length ? "  ·  sin.: " + e.syn.join(", ") : "") +
             (e.ant.length ? "  ·  ant.: " + e.ant.join(", ") : "");
           $("glossPreview").appendChild(d);
@@ -509,15 +523,17 @@ function layoutBody(doc, rawLines, gloss, step, headerH) {
     place(raw, body);
   }
 
-  // Glosario: al terminar la letra, dos puntos menos de tamaño
+  // Glosario: empieza en la cara siguiente, dos puntos menos de tamaño
   if (gloss && gloss.length) {
     const gs = Math.max(body - 2, 6);
     const glh = lineH * 0.85;
-    y += lineH;
+    page++; y = PAGE.t;
     place("Glosario", body, { bold: true });
     y += glh * 0.3;
     for (const e of gloss) {
-      place(e.word + " — " + e.trans, gs, { lh: glh, bold: true, align: "left" });
+      place(e.trans ? e.word + " — " + e.trans : e.word,
+            gs, { lh: glh, bold: true, align: "left" });
+      if (e.def) place(e.def, gs, { lh: glh, align: "left" });
       const extra = [];
       if (e.syn.length) extra.push("Sinónimos: " + e.syn.join(", "));
       if (e.ant.length) extra.push("Antónimos: " + e.ant.join(", "));

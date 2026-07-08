@@ -17,11 +17,13 @@ navegador: busca en LRCLIB y lyrics.ovh, valida por consenso y descarga
 un PDF listo para imprimir en un folio. Se despliega automáticamente con
 el workflow de GitHub Actions.
 
-Opcionalmente añade un **glosario al final de la letra** (dos puntos menos
-de tamaño): hasta 8 palabras poco comunes de la canción con su traducción
-al español (canciones en otro idioma, vía MyMemory) o una breve definición
-(canciones en español, vía dictionaryapi.dev), más dos sinónimos y dos
-antónimos (vía Datamuse). Todas las fuentes son gratuitas y sin clave.
+Opcionalmente añade un **glosario que empieza en la cara siguiente a la
+letra** (dos puntos menos de tamaño): todas las palabras no triviales de la
+canción, en el orden en que aparecen, cada una con su traducción al español
+(canciones en otro idioma, vía MyMemory), una definición breve tipo
+diccionario (dictionaryapi.dev/Datamuse, acepción principal) y dos
+sinónimos y dos antónimos en español (Datamuse). Todas las fuentes son
+gratuitas y sin clave.
 
 Nota: ChartLyrics no permite consultas desde el navegador, así que la web
 valida con dos fuentes (LRCLIB y lyrics.ovh); la versión de terminal usa
