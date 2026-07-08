@@ -13,9 +13,15 @@ línea de comandos.
 La app está publicada en **https://pacosql.github.io/songlyrics/**
 
 El archivo `index.html` es una web autónoma que hace todo desde el
-navegador: busca en LRCLIB y lyrics.ovh, valida por consenso y prepara la
-impresión a un folio (con «Guardar como PDF» del diálogo de impresión).
-Se despliega automáticamente con el workflow de GitHub Actions.
+navegador: busca en LRCLIB y lyrics.ovh, valida por consenso y descarga
+un PDF listo para imprimir en un folio. Se despliega automáticamente con
+el workflow de GitHub Actions.
+
+Opcionalmente añade un **glosario al final de la letra** (dos puntos menos
+de tamaño): hasta 8 palabras poco comunes de la canción con su traducción
+al español (canciones en otro idioma, vía MyMemory) o una breve definición
+(canciones en español, vía dictionaryapi.dev), más dos sinónimos y dos
+antónimos (vía Datamuse). Todas las fuentes son gratuitas y sin clave.
 
 Nota: ChartLyrics no permite consultas desde el navegador, así que la web
 valida con dos fuentes (LRCLIB y lyrics.ovh); la versión de terminal usa

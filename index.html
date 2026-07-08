@@ -104,6 +104,11 @@
     <h2 id="pvTitle"></h2>
     <h3 id="pvArtist"></h3>
     <div class="lyrics" id="pvLyrics"></div>
+    <p style="text-align:left"><label style="font-weight:400;display:flex;gap:8px;align-items:center">
+      <input type="checkbox" id="glossChk" checked>
+      Incluir glosario al final de la letra (traducción + sinónimos y antónimos)
+    </label></p>
+    <div id="glossPreview" style="text-align:left;font-size:.85rem;color:#444"></div>
     <p><button id="printBtn">⬇ Descargar PDF (1 folio)</button></p>
   </div>
 </div>
@@ -156,8 +161,12 @@ function similarity(a, b) {
 }
 
 /* ---------- Fuentes (APIs públicas con CORS) ---------- */
-async function fetchJSON(url) {
-  const r = await fetch(url, { headers: { "Accept": "application/json" } });
+async function fetchJSON(url, timeoutMs = 12000) {
+  const opts = { headers: { "Accept": "application/json" } };
+  if (typeof AbortSignal !== "undefined" && AbortSignal.timeout) {
+    opts.signal = AbortSignal.timeout(timeoutMs);
+  }
+  const r = await fetch(url, opts);
   if (!r.ok) throw new Error("HTTP " + r.status);
   return r.json();
 }
@@ -231,6 +240,123 @@ function validate(results) {
     v.agreeing = [results[0].source];
   }
   return v;
+}
+
+/* ---------- Glosario: palabras poco comunes de la letra ---------- */
+const ES_STOP = new Set(("que de la el los las y en un una unos unas por con para no si sí es al lo como " +
+  "más pero sus le ya o fue este esta esto son entre cuando muy sin sobre ser tiene también me hasta hay " +
+  "donde quien están desde todo todos toda todas nos ni contra otros otro otra otras ese esa eso esos esas " +
+  "ellos ellas él ella yo tú usted nosotros vosotros mi mis tu tus su te se les ante bajo cabe hacia según " +
+  "aunque porque mientras siempre nunca jamás ahora antes después luego pronto tarde aquí ahí allí allá " +
+  "así bien mal solo sola cosa cosas vez veces hoy ayer mañana cada dos tres cuatro cinco quiero quieres " +
+  "quiere queremos quieren quería amor vida corazón noche día días tiempo mundo cielo tierra alma ojos " +
+  "manos boca beso besos sueño sueños dolor calor frío agua fuego aire luz sol luna mar estrella estrellas " +
+  "canción cantar bailar llorar reír vivir morir sentir querer amar soñar volver partir llegar salir entrar " +
+  "estoy estás está estamos están estar estaba estaban estuve era eras éramos eran soy eres somos sois fui " +
+  "fuiste fuimos fueron sea sean sería serán será tengo tienes tenemos tienen tenía tenían tuve tuvo habrá " +
+  "había habían puedo puedes puede podemos pueden podía pude hago haces hace hacemos hacen hacía hice hizo " +
+  "digo dices dice decimos dicen decía dije dijo voy vas va vamos vais van iba iban fui sé sabes sabe " +
+  "sabemos saben sabía supe dame dime mira oye ven vete deja déjame conmigo contigo dentro fuera cerca " +
+  "lejos arriba abajo encima debajo delante detrás junto juntos junta juntas algo alguien nada nadie " +
+  "alguno alguna ninguno ninguna mucho mucha muchos muchas poco poca pocos pocas tanto tanta tantos tantas " +
+  "todo nuevo nueva viejo vieja grande pequeño bueno buena malo mala feliz triste bonito bonita hermoso " +
+  "hermosa mejor peor primero última último otra vez").split(/\s+/));
+const EN_STOP = new Set(("the and you your yours not with for that this what when where have will they " +
+  "she he was were are is been being from into over under about would could should there their them then " +
+  "than because something nothing anything everything someone anyone everyone always never just only very " +
+  "really little life love heart night day time world dream dreams away back down here now come came comes " +
+  "coming going gone want wants wanted need needs know knows knew think thinks thought feel feels felt " +
+  "make makes made take takes took give gives gave tell tells told say says said see sees saw look looks " +
+  "looked find finds found keep keeps kept let lets still while through before after again together every " +
+  "these those which whose whom been more most much many some other another things right wrong good great " +
+  "long yeah baby honey darling gonna wanna gotta ain't don't can't won't didn't doesn't isn't wasn't").split(/\s+/));
+const ES_MARKERS = new Set("que de la el y en mi tu te me se lo un una por con para no es está yo más".split(" "));
+const EN_MARKERS = new Set("the and you not with for that this your when have will they was are but all now know".split(" "));
+
+function isSpanishText(lyrics) {
+  const words = lyrics.toLowerCase().match(/[a-záéíóúüñ']+/g) || [];
+  let es = 0, en = 0;
+  for (const w of words) {
+    if (ES_MARKERS.has(w)) es++;
+    if (EN_MARKERS.has(w)) en++;
+  }
+  return es >= en;
+}
+
+function glossaryCandidates(lyrics, spanish, max) {
+  const re = spanish ? /[a-záéíóúüñ]{5,}/g : /[a-z]{5,}/g;
+  const stop = spanish ? ES_STOP : EN_STOP;
+  const words = [...new Set(lyrics.toLowerCase().match(re) || [])].filter(w => !stop.has(w));
+  words.sort((a, b) => b.length - a.length);
+  return words.slice(0, max);
+}
+
+// Canción en otro idioma: traducción al español (MyMemory) + sin./ant. (Datamuse)
+async function lookupEn(word) {
+  const e = { word, trans: "", syn: [], ant: [] };
+  try {
+    const d = await fetchJSON("https://api.mymemory.translated.net/get?q=" +
+      encodeURIComponent(word) + "&langpair=en|es", 9000);
+    const t = d.responseData && d.responseData.translatedText;
+    if (t && t.toLowerCase().trim() !== word) e.trans = t.toLowerCase().trim();
+  } catch (err) { /* sin traducción */ }
+  if (!e.trans) return null;
+  try {
+    const s = await fetchJSON("https://api.datamuse.com/words?max=2&rel_syn=" +
+      encodeURIComponent(word), 9000);
+    e.syn = s.map(x => x.word).slice(0, 2);
+  } catch (err) { /* sin sinónimos */ }
+  try {
+    const a = await fetchJSON("https://api.datamuse.com/words?max=2&rel_ant=" +
+      encodeURIComponent(word), 9000);
+    e.ant = a.map(x => x.word).slice(0, 2);
+  } catch (err) { /* sin antónimos */ }
+  return e;
+}
+
+// Canción en español: breve definición (dictionaryapi.dev / Datamuse) + sin./ant.
+async function lookupEs(word) {
+  const e = { word, trans: "", syn: [], ant: [] };
+  try {
+    const d = await fetchJSON("https://api.dictionaryapi.dev/api/v2/entries/es/" +
+      encodeURIComponent(word), 9000);
+    for (const m of (d[0] && d[0].meanings) || []) {
+      for (const df of m.definitions || []) {
+        if (!e.trans && df.definition) e.trans = df.definition;
+        for (const s of df.synonyms || []) if (e.syn.length < 2 && !e.syn.includes(s)) e.syn.push(s);
+        for (const a of df.antonyms || []) if (e.ant.length < 2 && !e.ant.includes(a)) e.ant.push(a);
+      }
+      for (const s of m.synonyms || []) if (e.syn.length < 2 && !e.syn.includes(s)) e.syn.push(s);
+      for (const a of m.antonyms || []) if (e.ant.length < 2 && !e.ant.includes(a)) e.ant.push(a);
+    }
+  } catch (err) { /* probamos Datamuse */ }
+  try {
+    if (!e.trans) {
+      const d = await fetchJSON("https://api.datamuse.com/words?v=es&max=1&md=d&sp=" +
+        encodeURIComponent(word), 9000);
+      const defs = d[0] && d[0].defs;
+      if (defs && defs[0]) e.trans = defs[0].replace(/^[^\t]*\t/, "");
+    }
+    if (e.trans && e.syn.length < 2) {
+      const s = await fetchJSON("https://api.datamuse.com/words?v=es&max=2&rel_syn=" +
+        encodeURIComponent(word), 9000);
+      for (const x of s) if (e.syn.length < 2 && !e.syn.includes(x.word)) e.syn.push(x.word);
+    }
+    if (e.trans && e.ant.length < 2) {
+      const a = await fetchJSON("https://api.datamuse.com/words?v=es&max=2&rel_ant=" +
+        encodeURIComponent(word), 9000);
+      for (const x of a) if (e.ant.length < 2 && !e.ant.includes(x.word)) e.ant.push(x.word);
+    }
+  } catch (err) { /* dejamos lo que haya */ }
+  return e.trans ? e : null;
+}
+
+async function buildGlossary(lyrics) {
+  const spanish = isSpanishText(lyrics);
+  const cands = glossaryCandidates(lyrics, spanish, 12);
+  if (!cands.length) return [];
+  const looked = await Promise.all(cands.map(w => (spanish ? lookupEs(w) : lookupEn(w))));
+  return looked.filter(Boolean).slice(0, 8);
 }
 
 /* ---------- Ajuste a un folio (máx. 2 caras A4) ---------- */
@@ -315,6 +441,25 @@ $("form").addEventListener("submit", async ev => {
     $("pvLyrics").textContent = v.chosen.lyrics;
     $("preview").style.display = "block";
     $("printBtn").style.display = "inline-block";
+
+    // Glosario en segundo plano (traducción/definición + sinónimos y antónimos)
+    $("glossPreview").innerHTML = "";
+    logLine("Preparando glosario…");
+    current.glossaryPromise = buildGlossary(v.chosen.lyrics).then(g => {
+      if (g.length) {
+        logLine("  ✓ Glosario: " + g.length + " palabras", "ok");
+        for (const e of g) {
+          const d = document.createElement("div");
+          d.textContent = "• " + e.word + " — " + e.trans +
+            (e.syn.length ? "  ·  sin.: " + e.syn.join(", ") : "") +
+            (e.ant.length ? "  ·  ant.: " + e.ant.join(", ") : "");
+          $("glossPreview").appendChild(d);
+        }
+      } else {
+        logLine("  · No encontré palabras para el glosario en los diccionarios.", "warn");
+      }
+      return g;
+    }).catch(() => []);
   } catch (e) {
     logLine("Error inesperado: " + e.message, "err");
   } finally {
@@ -338,33 +483,59 @@ function footerText(v) {
     + " — " + today;
 }
 
-function layoutBody(doc, rawLines, step, headerH) {
+function layoutBody(doc, rawLines, gloss, step, headerH) {
   const [body, lineH] = step;
   const maxW = PAGE.w - PAGE.l - PAGE.r;
   const bottom = PAGE.h - PAGE.b - 6; // hueco para el pie
   const blank = lineH * 0.55;
-  doc.setFontSize(body);
   const items = [];
   let page = 1, y = PAGE.t + headerH;
+
+  function place(text, size, opts = {}) {
+    doc.setFont("helvetica", opts.bold ? "bold" : "normal");
+    doc.setFontSize(size);
+    const lh = opts.lh || lineH;
+    for (const t of doc.splitTextToSize(text, maxW)) {
+      y += lh;
+      if (y > bottom) { page++; y = PAGE.t + lh; }
+      items.push({ text: t, page, y, size, bold: !!opts.bold,
+                   align: opts.align || "center", color: opts.color || 0 });
+    }
+  }
+
+  // Letra de la canción
   for (const raw of rawLines) {
     if (!raw.trim()) { y += blank; continue; }
-    for (const text of doc.splitTextToSize(raw, maxW)) {
-      y += lineH;
-      if (y > bottom) { page++; y = PAGE.t + lineH; }
-      items.push({ text, page, y });
+    place(raw, body);
+  }
+
+  // Glosario: al terminar la letra, dos puntos menos de tamaño
+  if (gloss && gloss.length) {
+    const gs = Math.max(body - 2, 6);
+    const glh = lineH * 0.85;
+    y += lineH;
+    place("Glosario", body, { bold: true });
+    y += glh * 0.3;
+    for (const e of gloss) {
+      place(e.word + " — " + e.trans, gs, { lh: glh, bold: true, align: "left" });
+      const extra = [];
+      if (e.syn.length) extra.push("Sinónimos: " + e.syn.join(", "));
+      if (e.ant.length) extra.push("Antónimos: " + e.ant.join(", "));
+      if (extra.length) place(extra.join("   ·   "), gs, { lh: glh, align: "left", color: 90 });
+      y += glh * 0.35;
     }
   }
   return { items, pages: page };
 }
 
-function generatePdf(data) {
+function generatePdf(data, gloss) {
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   const maxW = PAGE.w - PAGE.l - PAGE.r;
   const cx = PAGE.w / 2;
   const rawLines = data.lyrics.split(/\r?\n/);
 
-  // Cabecera: medir su altura con el paso más grande (varía poco)
+  // Elegir el mayor tamaño de letra con el que todo cabe en 2 caras
   let chosen = STEPS[STEPS.length - 1], layout = null, fits = false;
   for (const step of STEPS) {
     const [, , titleS, artistS] = step;
@@ -376,13 +547,13 @@ function generatePdf(data) {
     const artistLines = doc.splitTextToSize(data.artist, maxW);
     const headerH = titleLines.length * titleS * 0.45 +
       artistLines.length * artistS * 0.5 + 7;
-    const l = layoutBody(doc, rawLines, step, headerH);
+    const l = layoutBody(doc, rawLines, gloss, step, headerH);
     l.titleLines = titleLines; l.artistLines = artistLines; l.headerH = headerH;
     layout = l; chosen = step;
     if (l.pages <= 2) { fits = true; break; }
   }
 
-  const [body, , titleS, artistS] = chosen;
+  const [, , titleS, artistS] = chosen;
 
   // Cabecera (solo primera cara)
   let y = PAGE.t;
@@ -397,14 +568,16 @@ function generatePdf(data) {
   doc.setDrawColor(180);
   doc.line(PAGE.l, y + 2.5, PAGE.w - PAGE.r, y + 2.5);
 
-  // Letra
-  doc.setTextColor(0);
-  doc.setFontSize(body);
+  // Letra y glosario
   let currentPage = 1;
   for (const it of layout.items) {
     while (currentPage < it.page) { doc.addPage(); currentPage++; }
     doc.setPage(it.page);
-    doc.text(it.text, cx, it.y, { align: "center" });
+    doc.setFont("helvetica", it.bold ? "bold" : "normal");
+    doc.setFontSize(it.size);
+    doc.setTextColor(it.color);
+    if (it.align === "left") doc.text(it.text, PAGE.l, it.y);
+    else doc.text(it.text, cx, it.y, { align: "center" });
   }
 
   // Pie en todas las páginas
@@ -425,7 +598,7 @@ function slug(text) {
     .replace(/[^\w\s-]/g, "").trim().replace(/[\s_-]+/g, "-") || "cancion";
 }
 
-$("printBtn").addEventListener("click", () => {
+$("printBtn").addEventListener("click", async () => {
   if (!current) return;
   if (!window.jspdf || !window.jspdf.jsPDF) {
     // Plan B si la librería no cargó: diálogo de imprimir del navegador
@@ -438,9 +611,11 @@ $("printBtn").addEventListener("click", () => {
     window.print();
     return;
   }
-  const { doc, pages, fits } = generatePdf(current);
+  const gloss = ($("glossChk").checked && current.glossaryPromise)
+    ? await current.glossaryPromise : [];
+  const { doc, pages, fits } = generatePdf(current, gloss);
   if (!fits) {
-    alert("La letra es muy larga: el PDF ocupa " + pages +
+    alert("El contenido es muy largo: el PDF ocupa " + pages +
       " páginas, más de un folio incluso con la letra mínima.");
   }
   doc.save(slug(current.artist) + "-" + slug(current.title) + ".pdf");
