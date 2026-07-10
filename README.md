@@ -22,10 +22,8 @@ licencia OFL, incrustada en `fonts.js`), con tamaños fijos: letra a 12 pt,
 glosario a 10 pt. Nunca se encoge el texto: si la canción es larga, el PDF
 tiene más páginas, todas numeradas en el pie.
 
-Incluye un modo **Cancionero**: pegando una lista de canciones (una por
-línea, «Canción — Artista») descarga un único PDF con todas — cada canción
-empieza en página nueva, con su letra, su glosario y su validación en el
-pie de página.
+La identificación de la canción usa el buscador de iTunes (tolera erratas
+en el nombre del artista y canoniza el título) con LRCLIB como respaldo.
 
 Opcionalmente añade un **glosario que empieza en la cara siguiente a la
 letra** (dos puntos menos de tamaño): todas las palabras no triviales de la

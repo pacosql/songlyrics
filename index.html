@@ -107,33 +107,6 @@
     <input type="password" id="apiKey" placeholder="sk-ant-..." style="font-size:1rem;padding:10px 12px;border:1px solid #ccc;border-radius:8px;width:100%">
   </details>
 
-  <details style="margin-top:16px;background:#fff;border:1px solid #ddd;border-radius:10px;padding:12px 16px">
-    <summary style="cursor:pointer;font-weight:600">📚 Cancionero: varias canciones en un solo PDF</summary>
-    <p style="font-size:.85rem;color:#666">Una canción por línea, con el formato
-    «Canción — Artista». Cada canción empieza en página nueva, con su letra,
-    su glosario y su validación en el pie.</p>
-    <textarea id="batchList" rows="16" style="width:100%;font-size:.95rem;padding:10px 12px;border:1px solid #ccc;border-radius:8px;font-family:inherit">Hello, Goodbye — The Beatles
-Yellow Submarine — The Beatles
-Octopus's Garden — The Beatles
-Count On Me — Bruno Mars
-What a Wonderful World — Louis Armstrong
-Stand by Me — Ben E. King
-I'm a Believer — The Monkees
-Lemon Tree — Fools Garden
-Don't Worry, Be Happy — Bobby McFerrin
-Happy — Pharrell Williams
-Best Day of My Life — American Authors
-Counting Stars — OneRepublic
-Hey Jude — The Beatles
-Top of the World — The Carpenters
-You've Got a Friend in Me — Randy Newman</textarea>
-    <p style="text-align:left"><label style="font-weight:400;display:flex;gap:8px;align-items:center">
-      <input type="checkbox" id="batchGloss" checked>
-      Incluir glosario de cada canción
-    </label></p>
-    <button id="batchBtn" style="background:#1d9e57;color:#fff;width:100%">⬇ Buscar todas y descargar un solo PDF</button>
-  </details>
-
   <div class="log" id="log"></div>
   <div class="verdict" id="verdict"></div>
 
@@ -216,10 +189,41 @@ async function fetchJSON(url, timeoutMs = 12000) {
   return r.json();
 }
 
+// iTunes Search vía JSONP (evita CORS): tolera erratas («beattles» →
+// The Beatles) y devuelve el nombre canónico de artista y título.
+function jsonp(url, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const cb = "__jsonp_" + Math.random().toString(36).slice(2);
+    const script = document.createElement("script");
+    const timer = setTimeout(() => { cleanup(); reject(new Error("timeout")); }, timeoutMs);
+    function cleanup() { clearTimeout(timer); delete window[cb]; script.remove(); }
+    window[cb] = data => { cleanup(); resolve(data); };
+    script.onerror = () => { cleanup(); reject(new Error("jsonp error")); };
+    script.src = url + (url.includes("?") ? "&" : "?") + "callback=" + cb;
+    document.head.appendChild(script);
+  });
+}
+
+// Quita coletillas del catálogo tipo «(Remastered 2009)» que no están en
+// las fuentes de letras
+function cleanTitle(t) {
+  return t.replace(/\s*[(\[][^)\]]*(remaster|live|mono|stereo|deluxe|edit|version|mix|bonus|single)[^)\]]*[)\]]/gi, "")
+    .replace(/\s+/g, " ").trim();
+}
+
 async function resolveSong(song, artist) {
-  // LRCLIB search para canonizar artista/título
-  const q = encodeURIComponent((artist ? artist + " " : "") + song);
+  // 1) iTunes Search: canoniza y corrige erratas
   try {
+    const term = encodeURIComponent((artist ? artist + " " : "") + song);
+    const d = await jsonp("https://itunes.apple.com/search?term=" + term +
+      "&entity=song&limit=1");
+    if (d.results && d.results.length) {
+      return { artist: d.results[0].artistName, title: cleanTitle(d.results[0].trackName) };
+    }
+  } catch (e) { /* probamos LRCLIB */ }
+  // 2) LRCLIB search como alternativa
+  try {
+    const q = encodeURIComponent((artist ? artist + " " : "") + song);
     const hits = await fetchJSON("https://lrclib.net/api/search?q=" + q);
     const h = hits.find(x => x.plainLyrics);
     if (h) return { artist: h.artistName, title: h.trackName };
@@ -235,12 +239,23 @@ async function fromLrclib(artist, title) {
     const lyrics = (d.plainLyrics || "").trim();
     if (lyrics) return { source: "LRCLIB", lyrics };
   } catch (e) { /* sin resultado */ }
-  // plan B: búsqueda
+  // plan B: búsqueda, prefiriendo el resultado cuyo artista y título coinciden
   try {
     const hits = await fetchJSON("https://lrclib.net/api/search?q=" +
       encodeURIComponent(artist + " " + title));
-    const h = hits.find(x => x.plainLyrics);
-    if (h) return { source: "LRCLIB", lyrics: h.plainLyrics.trim() };
+    const withLyrics = hits.filter(x => x.plainLyrics);
+    const nT = normalize(title), nA = normalize(artist);
+    const scored = withLyrics.map(x => {
+      let score = 0;
+      const ht = normalize(x.trackName || ""), ha = normalize(x.artistName || "");
+      if (ht === nT) score += 2; else if (ht.includes(nT) || nT.includes(ht)) score += 1;
+      if (ha === nA) score += 2; else if (ha.includes(nA) || nA.includes(ha)) score += 1;
+      return { x, score };
+    }).sort((a, b) => b.score - a.score);
+    if (scored.length && scored[0].score > 0) {
+      return { source: "LRCLIB", lyrics: scored[0].x.plainLyrics.trim() };
+    }
+    if (withLyrics.length) return { source: "LRCLIB", lyrics: withLyrics[0].plainLyrics.trim() };
   } catch (e) { /* sin resultado */ }
   return null;
 }
@@ -768,23 +783,6 @@ function generatePdf(data, gloss) {
   return { doc, pages: doc.getNumberOfPages() };
 }
 
-// Cancionero: varias canciones en un solo documento, cada una en página nueva
-function generatePdfBatch(songs) {
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit: "mm", format: "a4" });
-  const family = registerFont(doc);
-  const footers = [];
-  let offset = 0;
-  for (const s of songs) {
-    const used = renderSongInto(doc, family, s, s.gloss || [], offset);
-    for (let p = 1; p <= used; p++) {
-      footers[offset + p] = s.title + " · " + footerText(s.verdict);
-    }
-    offset += used;
-  }
-  drawFooters(doc, family, footers);
-  return { doc, pages: doc.getNumberOfPages() };
-}
 
 function slug(text) {
   return text.normalize("NFD").replace(/[̀-ͯ]/g, "")
@@ -810,71 +808,6 @@ $("printBtn").addEventListener("click", async () => {
   doc.save(slug(current.artist) + "-" + slug(current.title) + ".pdf");
 });
 
-/* ---------- Cancionero: varias canciones → un solo PDF ---------- */
-async function fetchOneSong(line) {
-  const parts = line.split(/\s+[—–|]\s+|\s+-\s+/);
-  const songName = (parts[0] || "").trim();
-  const artistIn = (parts[1] || "").trim() || null;
-  if (!songName) return null;
-  const id = await resolveSong(songName, artistIn);
-  if (!id) { logLine("  ✗ " + line + ": no identificada", "err"); return null; }
-  const settled = await Promise.all([
-    fromLrclib(id.artist, id.title),
-    fromLyricsOvh(id.artist, id.title),
-  ]);
-  const results = settled.filter(Boolean);
-  if (!results.length) {
-    logLine("  ✗ " + id.title + " — " + id.artist + ": sin letra en las fuentes", "err");
-    return null;
-  }
-  const v = validate(results);
-  logLine("  ✓ " + id.title + " — " + id.artist +
-    (v.validated ? " (validada por " + v.agreeing.length + " fuentes)" : " (una sola fuente)"), "ok");
-  return { title: id.title, artist: id.artist, lyrics: v.chosen.lyrics, verdict: v };
-}
-
-$("batchBtn").addEventListener("click", async () => {
-  const lines = $("batchList").value.split("\n").map(l => l.trim()).filter(Boolean);
-  if (!lines.length) return;
-  const btn = $("batchBtn");
-  btn.disabled = true;
-  $("log").innerHTML = "";
-  $("log").style.display = "block";
-  try {
-    logLine("Buscando " + lines.length + " canciones…");
-    const songs = [];
-    for (const line of lines) {
-      try { const s = await fetchOneSong(line); if (s) songs.push(s); }
-      catch (e) { logLine("  ✗ " + line + ": " + e.message, "err"); }
-    }
-    if (!songs.length) { logLine("No se encontró ninguna letra.", "err"); return; }
-
-    if ($("batchGloss").checked) {
-      for (const s of songs) {
-        logLine("Glosario de «" + s.title + "»…");
-        try {
-          const g = await buildGlossary(s.lyrics, s.title, s.artist);
-          s.gloss = g.entries;
-        } catch (e) { s.gloss = []; }
-      }
-    }
-
-    if (!window.jspdf || !window.jspdf.jsPDF) {
-      logLine("No se pudo generar el PDF (librería no cargada).", "err");
-      return;
-    }
-    const { doc, pages } = generatePdfBatch(songs);
-    doc.save("cancionero.pdf");
-    logLine("📄 Cancionero generado: " + songs.length + " canciones, " +
-      pages + " páginas.", "ok");
-    if (songs.length < lines.length) {
-      logLine("⚠ " + (lines.length - songs.length) +
-        " canciones no se encontraron y no van en el PDF.", "warn");
-    }
-  } finally {
-    btn.disabled = false;
-  }
-});
 </script>
 </body>
 </html>
