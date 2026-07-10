@@ -89,10 +89,10 @@
 
   <form id="form">
     <label>Canción
-      <input type="text" id="song" placeholder="p. ej. Yesterday" required>
+      <input type="text" id="song" required>
     </label>
     <label>Artista (opcional, ayuda a acertar)
-      <input type="text" id="artist" placeholder="p. ej. The Beatles">
+      <input type="text" id="artist">
     </label>
     <button id="searchBtn" type="submit">Buscar y validar letra</button>
   </form>
@@ -105,6 +105,33 @@
     palabra tiene en la canción, con dos sinónimos y dos antónimos en español.
     Sin clave, se usan diccionarios gratuitos (acepción principal).</p>
     <input type="password" id="apiKey" placeholder="sk-ant-..." style="font-size:1rem;padding:10px 12px;border:1px solid #ccc;border-radius:8px;width:100%">
+  </details>
+
+  <details style="margin-top:16px;background:#fff;border:1px solid #ddd;border-radius:10px;padding:12px 16px">
+    <summary style="cursor:pointer;font-weight:600">📚 Cancionero: varias canciones en un solo PDF</summary>
+    <p style="font-size:.85rem;color:#666">Una canción por línea, con el formato
+    «Canción — Artista». Cada canción empieza en página nueva, con su letra,
+    su glosario y su validación en el pie.</p>
+    <textarea id="batchList" rows="16" style="width:100%;font-size:.95rem;padding:10px 12px;border:1px solid #ccc;border-radius:8px;font-family:inherit">Hello, Goodbye — The Beatles
+Yellow Submarine — The Beatles
+Octopus's Garden — The Beatles
+Count On Me — Bruno Mars
+What a Wonderful World — Louis Armstrong
+Stand by Me — Ben E. King
+I'm a Believer — The Monkees
+Lemon Tree — Fools Garden
+Don't Worry, Be Happy — Bobby McFerrin
+Happy — Pharrell Williams
+Best Day of My Life — American Authors
+Counting Stars — OneRepublic
+Hey Jude — The Beatles
+Top of the World — The Carpenters
+You've Got a Friend in Me — Randy Newman</textarea>
+    <p style="text-align:left"><label style="font-weight:400;display:flex;gap:8px;align-items:center">
+      <input type="checkbox" id="batchGloss" checked>
+      Incluir glosario de cada canción
+    </label></p>
+    <button id="batchBtn" style="background:#1d9e57;color:#fff;width:100%">⬇ Buscar todas y descargar un solo PDF</button>
   </details>
 
   <div class="log" id="log"></div>
@@ -669,15 +696,13 @@ function layoutBody(doc, rawLines, gloss, headerH, family) {
   return { items, pages: page };
 }
 
-function generatePdf(data, gloss) {
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF({ unit: "mm", format: "a4" });
-  const family = registerFont(doc);
+// Dibuja una canción (cabecera + letra + glosario) a partir de la página
+// pageOffset+1 del documento; devuelve cuántas páginas ocupó.
+function renderSongInto(doc, family, data, gloss, pageOffset) {
   const maxW = PAGE.w - PAGE.l - PAGE.r;
   const cx = PAGE.w / 2;
   const rawLines = data.lyrics.split(/\r?\n/);
 
-  // Cabecera (solo primera cara)
   doc.setFont(family, "bold");
   doc.setFontSize(TITLE_S);
   const titleLines = doc.splitTextToSize(data.title, maxW);
@@ -689,6 +714,13 @@ function generatePdf(data, gloss) {
 
   const layout = layoutBody(doc, rawLines, gloss, headerH, family);
 
+  function goTo(page) {
+    while (doc.getNumberOfPages() < page) doc.addPage();
+    doc.setPage(page);
+  }
+
+  // Cabecera (primera página de la canción)
+  goTo(pageOffset + 1);
   let y = PAGE.t;
   doc.setTextColor(20);
   doc.setFont(family, "bold");
@@ -702,29 +734,56 @@ function generatePdf(data, gloss) {
   doc.line(PAGE.l, y + 2.5, PAGE.w - PAGE.r, y + 2.5);
 
   // Letra y glosario
-  let currentPage = 1;
   for (const it of layout.items) {
-    while (currentPage < it.page) { doc.addPage(); currentPage++; }
-    doc.setPage(it.page);
+    goTo(pageOffset + it.page);
     doc.setFont(family, it.bold ? "bold" : "normal");
     doc.setFontSize(it.size);
     doc.setTextColor(it.color);
     if (it.align === "left") doc.text(it.text, PAGE.l, it.y);
     else doc.text(it.text, cx, it.y, { align: "center" });
   }
+  return layout.pages;
+}
 
-  // Pie en todas las páginas
-  const foot = footerText(data.verdict);
+function drawFooters(doc, family, footers) {
   const total = doc.getNumberOfPages();
   doc.setFont(family, "normal");
   doc.setFontSize(7);
   doc.setTextColor(130);
   for (let p = 1; p <= total; p++) {
     doc.setPage(p);
-    doc.text(foot, PAGE.l, PAGE.h - 8);
+    doc.text(footers[p] || "", PAGE.l, PAGE.h - 8);
     doc.text("Página " + p + "/" + total, PAGE.w - PAGE.r, PAGE.h - 8, { align: "right" });
   }
-  return { doc, pages: total };
+}
+
+function generatePdf(data, gloss) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const family = registerFont(doc);
+  const used = renderSongInto(doc, family, data, gloss, 0);
+  const footers = [];
+  for (let p = 1; p <= used; p++) footers[p] = footerText(data.verdict);
+  drawFooters(doc, family, footers);
+  return { doc, pages: doc.getNumberOfPages() };
+}
+
+// Cancionero: varias canciones en un solo documento, cada una en página nueva
+function generatePdfBatch(songs) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const family = registerFont(doc);
+  const footers = [];
+  let offset = 0;
+  for (const s of songs) {
+    const used = renderSongInto(doc, family, s, s.gloss || [], offset);
+    for (let p = 1; p <= used; p++) {
+      footers[offset + p] = s.title + " · " + footerText(s.verdict);
+    }
+    offset += used;
+  }
+  drawFooters(doc, family, footers);
+  return { doc, pages: doc.getNumberOfPages() };
 }
 
 function slug(text) {
@@ -749,6 +808,72 @@ $("printBtn").addEventListener("click", async () => {
     ? await current.glossaryPromise : [];
   const { doc } = generatePdf(current, gloss);
   doc.save(slug(current.artist) + "-" + slug(current.title) + ".pdf");
+});
+
+/* ---------- Cancionero: varias canciones → un solo PDF ---------- */
+async function fetchOneSong(line) {
+  const parts = line.split(/\s+[—–|]\s+|\s+-\s+/);
+  const songName = (parts[0] || "").trim();
+  const artistIn = (parts[1] || "").trim() || null;
+  if (!songName) return null;
+  const id = await resolveSong(songName, artistIn);
+  if (!id) { logLine("  ✗ " + line + ": no identificada", "err"); return null; }
+  const settled = await Promise.all([
+    fromLrclib(id.artist, id.title),
+    fromLyricsOvh(id.artist, id.title),
+  ]);
+  const results = settled.filter(Boolean);
+  if (!results.length) {
+    logLine("  ✗ " + id.title + " — " + id.artist + ": sin letra en las fuentes", "err");
+    return null;
+  }
+  const v = validate(results);
+  logLine("  ✓ " + id.title + " — " + id.artist +
+    (v.validated ? " (validada por " + v.agreeing.length + " fuentes)" : " (una sola fuente)"), "ok");
+  return { title: id.title, artist: id.artist, lyrics: v.chosen.lyrics, verdict: v };
+}
+
+$("batchBtn").addEventListener("click", async () => {
+  const lines = $("batchList").value.split("\n").map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return;
+  const btn = $("batchBtn");
+  btn.disabled = true;
+  $("log").innerHTML = "";
+  $("log").style.display = "block";
+  try {
+    logLine("Buscando " + lines.length + " canciones…");
+    const songs = [];
+    for (const line of lines) {
+      try { const s = await fetchOneSong(line); if (s) songs.push(s); }
+      catch (e) { logLine("  ✗ " + line + ": " + e.message, "err"); }
+    }
+    if (!songs.length) { logLine("No se encontró ninguna letra.", "err"); return; }
+
+    if ($("batchGloss").checked) {
+      for (const s of songs) {
+        logLine("Glosario de «" + s.title + "»…");
+        try {
+          const g = await buildGlossary(s.lyrics, s.title, s.artist);
+          s.gloss = g.entries;
+        } catch (e) { s.gloss = []; }
+      }
+    }
+
+    if (!window.jspdf || !window.jspdf.jsPDF) {
+      logLine("No se pudo generar el PDF (librería no cargada).", "err");
+      return;
+    }
+    const { doc, pages } = generatePdfBatch(songs);
+    doc.save("cancionero.pdf");
+    logLine("📄 Cancionero generado: " + songs.length + " canciones, " +
+      pages + " páginas.", "ok");
+    if (songs.length < lines.length) {
+      logLine("⚠ " + (lines.length - songs.length) +
+        " canciones no se encontraron y no van en el PDF.", "warn");
+    }
+  } finally {
+    btn.disabled = false;
+  }
 });
 </script>
 </body>
