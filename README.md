@@ -2,8 +2,8 @@
 
 App personal: le dices una canción, busca la letra en **varias fuentes
 públicas y gratuitas**, la **valida por consenso** entre ellas y genera un
-**PDF listo para imprimir en un solo folio** (una columna, como máximo las
-dos caras, ajustando el tamaño de letra automáticamente).
+**PDF listo para imprimir** (una columna, tamaño de letra fijo y legible;
+las canciones largas simplemente ocupan más páginas).
 
 Hay dos versiones: una **página web** (sin instalar nada) y una app de
 línea de comandos.
@@ -14,8 +14,13 @@ La app está publicada en **https://pacosql.github.io/songlyrics/**
 
 El archivo `index.html` es una web autónoma que hace todo desde el
 navegador: busca en LRCLIB y lyrics.ovh, valida por consenso y descarga
-un PDF listo para imprimir en un folio. Se despliega automáticamente con
-el workflow de GitHub Actions.
+un PDF listo para imprimir. Se despliega automáticamente con el workflow
+de GitHub Actions.
+
+El PDF usa la tipografía **Atkinson Hyperlegible** (Braille Institute,
+licencia OFL, incrustada en `fonts.js`), con tamaños fijos: letra a 12 pt,
+glosario a 10 pt. Nunca se encoge el texto: si la canción es larga, el PDF
+tiene más páginas, todas numeradas en el pie.
 
 Opcionalmente añade un **glosario que empieza en la cara siguiente a la
 letra** (dos puntos menos de tamaño): todas las palabras no triviales de la
@@ -69,10 +74,11 @@ python -m lyrics_app "Clavado en un bar" -a "Maná" -o clavado.pdf
 
 - Formato A4, **una sola columna**, título y artista en cabecera, letra
   centrada.
-- **Máximo un folio (2 páginas, cara y dorso)**: el tamaño de letra baja
-  automáticamente de 12 pt hasta 7 pt hasta que quepa. Si ni así cabe,
-  se genera igualmente y la app avisa.
-- El pie de página indica qué fuentes validaron la letra y la fecha.
+- **Tamaño de letra fijo y legible** (12 pt en la web): el texto nunca se
+  encoge; las canciones largas ocupan más páginas.
+- El pie de página indica qué fuentes validaron la letra, la fecha y el
+  número de página.
+- (La versión de terminal aún ajusta el tamaño para caber en un folio.)
 
 ## Notas
 
